@@ -45,7 +45,7 @@ class App(object):
 
 
 def get_wsgi_server(app):
-    lookup = app.router.lookup
+    server_name = app.settings.get('SERVER_NAME')
     lookup_cache = OrderedDict()  # FIFO Cache for URL lookups.
     lookup_cache_size = app.settings.get(
         ['ROUTING', 'LOOKUP_CACHE_SIZE'],
@@ -53,16 +53,12 @@ def get_wsgi_server(app):
     )
     preloaded = app.preloaded
 
-    # Pre-fill the lookup cache for URLs without path arguments.
-    for path, method, view in routing.walk(app.routes):
-        if '{' not in path:
-            key = method.upper() + ' ' + path
-            lookup_cache[key] = lookup(path, method)
-
     def func(environ, start_response):
+        lookup = app.router.bind(environ, server_name=server_name)
+        host = environ['HTTP_HOST']
         method = environ['REQUEST_METHOD']
         path = environ['PATH_INFO']
-        lookup_key = method + ' ' + path
+        lookup_key = host + ' ' + method + ' ' + path
         state = {
             'wsgi_environ': environ,
             'method': method,
@@ -171,7 +167,7 @@ def preload_state(state: Dict[str, Any], routes: routing.RoutesConfig) -> None:
 def get_preloaded_components(routes: routing.RoutesConfig) -> Set[type]:
     preloaded_components = set()
 
-    for path, method, view in routing.walk(routes):
+    for path, method, view, subdomain, host in routing.walk(routes):
         view_signature = inspect.signature(view)
         for param in view_signature.parameters.values():
             if getattr(param.annotation, 'preload', False):

@@ -28,8 +28,22 @@ typing_types = (
 )
 
 
-Route = namedtuple('Route', ['path', 'method', 'view'])
-Include = namedtuple('Include', ['path', 'routes'])
+class Route(namedtuple('Route', ['path', 'method', 'view', 'subdomain', 'host'])):
+
+    __slots__ = ()
+
+    def __new__(cls, path, method, view, subdomain=None, host=None):
+        return super(Route, cls).__new__(cls, path, method, view, subdomain, host)
+
+
+class Include(namedtuple('Include', ['path', 'routes', 'subdomain', 'host'])):
+
+    __slots__ = ()
+
+    def __new__(cls, path, routes, subdomain=None, host=None):
+        return super(Include, cls).__new__(cls, path, routes, subdomain, host)
+
+
 Endpoint = namedtuple('Endpoint', ['view', 'pipeline'])
 RoutesConfig = Sequence[Union[Route, Include]]
 
@@ -71,7 +85,7 @@ class Router(object):
         rules = []
         views = {}
 
-        for (path, method, view) in walk(routes):
+        for (path, method, view, subdomain, host) in walk(routes):
             view_signature = inspect.signature(view)
             uritemplate = URITemplate(path)
 
@@ -109,7 +123,13 @@ class Router(object):
 
             # Create a werkzeug routing rule
             name = view.__name__
-            rule = Rule(werkzeug_path, methods=[method], endpoint=name)
+            rule = Rule(
+                werkzeug_path,
+                methods=[method],
+                endpoint=name,
+                subdomain=subdomain,
+                host=host,
+            )
             rules.append(rule)
 
             # Determine any inferred type annotations for the view
@@ -152,22 +172,27 @@ class Router(object):
 
         self.exception_pipeline = pipelines.build_pipeline(exception_handler, initial_types, required_type, {})
         self.routes = routes
-        self.adapter = Map(rules).bind('example.com')
+        self.rule_map = Map(rules)
         self.views = views
 
-    def lookup(self, path: str, method: str) -> RouterLookup:
-        try:
-            (name, kwargs) = self.adapter.match(path, method)
-        except werkzeug.exceptions.NotFound:
-            raise exceptions.NotFound()
-        except werkzeug.exceptions.MethodNotAllowed:
-            raise exceptions.MethodNotAllowed()
-        except werkzeug.routing.RequestRedirect as exc:
-            path = urlparse(exc.new_url).path
-            raise exceptions.Found(path)
+    def bind(self, environ, server_name=None):
+        adapter = self.rule_map.bind_to_environ(environ, server_name=server_name)
 
-        (view, pipeline) = self.views[name]
-        return (view, pipeline, kwargs)
+        def lookup(path: str, method: str) -> RouterLookup:
+            try:
+                (name, kwargs) = adapter.match(path, method)
+            except werkzeug.exceptions.NotFound:
+                raise exceptions.NotFound()
+            except werkzeug.exceptions.MethodNotAllowed:
+                raise exceptions.MethodNotAllowed()
+            except werkzeug.routing.RequestRedirect as exc:
+                path = urlparse(exc.new_url).path
+                raise exceptions.Found(path)
+
+            (view, pipeline) = self.views[name]
+            return (view, pipeline, kwargs)
+
+        return lookup
 
 
 def exception_handler(environ: wsgi.WSGIEnviron,
@@ -189,11 +214,11 @@ def exception_handler(environ: wsgi.WSGIEnviron,
     return http.Response(message, 500, {'Content-Type': 'text/plain; charset=utf-8'})
 
 
-def walk(routes: RoutesConfig, prefix='') -> Iterator[Route]:
+def walk(routes: RoutesConfig, prefix='', subdomain=None, host=None) -> Iterator[Route]:
     for entry in routes:
         if isinstance(entry, Include):
-            yield from walk(entry.routes, prefix + entry.path)
+            yield from walk(entry.routes, prefix + entry.path, entry.subdomain, entry.host)
         elif prefix:
-            yield Route(prefix + entry.path, entry.method, entry.view)
+            yield Route(prefix + entry.path, entry.method, entry.view, subdomain, host)
         else:
             yield entry

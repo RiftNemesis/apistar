@@ -57,7 +57,7 @@ def get_link(route: Route) -> Link:
     Given a single route, return a Link instance containing all the information
     needed to expose that route in an API Schema.
     """
-    path, method, view = route
+    path, method, view, subdomain, host = route
 
     view_signature = inspect.signature(view)
     uritemplate = URITemplate(path)
